@@ -8,6 +8,7 @@ function summit_jobdiva_register_settings()
             "type" => "array",
             "sanitize_callback" => "summit_jobdiva_sanitize_settings",
             "default" => [
+                "client_id" => "",
                 "username" => "",
                 "password" => "",
                 "federal_jobs" => false,
@@ -20,6 +21,14 @@ function summit_jobdiva_register_settings()
         __("JobDiva Connection", "summit-jobdiva"),
         "__return_null",
         "summit-jobdiva-settings",
+    );
+
+    add_settings_field(
+        "summit_jobdiva_client_id",
+        __("JobDiva Client ID", "summit-jobdiva"),
+        "summit_jobdiva_render_client_id_field",
+        "summit-jobdiva-settings",
+        "summit_jobdiva_connection",
     );
 
     add_settings_field(
@@ -76,28 +85,50 @@ function summit_jobdiva_sanitize_settings($input)
         $current_settings = [];
     }
 
-    $username = isset($input["username"]) && is_string($input["username"])
-        ? sanitize_text_field(wp_unslash($input["username"]))
-        : "";
-    $password = isset($input["password"]) && is_string($input["password"])
-        ? wp_unslash($input["password"])
-        : "";
+    $client_id =
+        isset($input["client_id"]) && is_string($input["client_id"])
+            ? sanitize_text_field(wp_unslash($input["client_id"]))
+            : "";
+    $username =
+        isset($input["username"]) && is_string($input["username"])
+            ? sanitize_text_field(wp_unslash($input["username"]))
+            : "";
+    $password =
+        isset($input["password"]) && is_string($input["password"])
+            ? wp_unslash($input["password"])
+            : "";
 
     // An empty password field means keep the saved credential, not clear it.
     return [
+        "client_id" => $client_id,
         "username" => $username,
-        "password" => $password !== ""
-            ? $password
-            : ($current_settings["password"] ?? ""),
-        "federal_jobs" => isset($input["federal_jobs"]) &&
-            $input["federal_jobs"] === "1",
+        "password" =>
+            $password !== "" ? $password : $current_settings["password"] ?? "",
+        "federal_jobs" =>
+            isset($input["federal_jobs"]) && $input["federal_jobs"] === "1",
     ];
+}
+
+function summit_jobdiva_render_client_id_field()
+{
+    $settings = get_option("summit_jobdiva_settings", []);
+    $client_id = is_array($settings) ? $settings["client_id"] ?? "" : "";
+    ?>
+    <input
+        type="text"
+        id="summit_jobdiva_client_id"
+        name="summit_jobdiva_settings[client_id]"
+        value="<?php echo esc_attr($client_id); ?>"
+        class="regular-text"
+        autocomplete="client_id"
+    />
+    <?php
 }
 
 function summit_jobdiva_render_username_field()
 {
     $settings = get_option("summit_jobdiva_settings", []);
-    $username = is_array($settings) ? ($settings["username"] ?? "") : "";
+    $username = is_array($settings) ? $settings["username"] ?? "" : "";
     ?>
     <input
         type="text"
@@ -122,7 +153,10 @@ function summit_jobdiva_render_password_field()
         autocomplete="new-password"
     />
     <p class="description">
-        <?php esc_html_e("Leave blank to keep the current password.", "summit-jobdiva"); ?>
+        <?php esc_html_e(
+            "Leave blank to keep the current password.",
+            "summit-jobdiva",
+        ); ?>
     </p>
     <?php
 }
@@ -149,16 +183,14 @@ function summit_jobdiva_render_options_page()
 {
     if (!current_user_can("manage_options")) {
         return;
-    }
-    ?>
+    } ?>
     <div class="wrap">
         <h1><?php esc_html_e("JobDiva Settings", "summit-jobdiva"); ?></h1>
         <form action="options.php" method="post">
             <?php
             settings_fields("summit_jobdiva_settings_group");
             do_settings_sections("summit-jobdiva-settings");
-            submit_button();
-            ?>
+            submit_button();?>
         </form>
     </div>
     <?php

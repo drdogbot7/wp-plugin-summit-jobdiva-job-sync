@@ -11,7 +11,7 @@ function summit_jobdiva_register_settings()
                 "client_id" => "",
                 "username" => "",
                 "password" => "",
-                "federal_jobs" => false,
+                "job_division" => "Commercial",
             ],
         ],
     );
@@ -48,9 +48,9 @@ function summit_jobdiva_register_settings()
     );
 
     add_settings_field(
-        "summit_jobdiva_federal_jobs",
-        __("Federal Jobs", "summit-jobdiva"),
-        "summit_jobdiva_render_federal_jobs_field",
+        "summit_jobdiva_job_division",
+        __("Job Division", "summit-jobdiva"),
+        "summit_jobdiva_render_job_division_field",
         "summit-jobdiva-settings",
         "summit_jobdiva_connection",
     );
@@ -97,6 +97,13 @@ function summit_jobdiva_sanitize_settings($input)
         isset($input["password"]) && is_string($input["password"])
             ? wp_unslash($input["password"])
             : "";
+    $job_division =
+        isset($input["job_division"]) && is_string($input["job_division"])
+            ? sanitize_text_field(wp_unslash($input["job_division"]))
+            : "";
+    if (!in_array($job_division, ["Federal", "Commercial"], true)) {
+        $job_division = summit_jobdiva_get_selected_division($current_settings);
+    }
 
     // An empty password field means keep the saved credential, not clear it.
     return [
@@ -104,9 +111,28 @@ function summit_jobdiva_sanitize_settings($input)
         "username" => $username,
         "password" =>
             $password !== "" ? $password : $current_settings["password"] ?? "",
-        "federal_jobs" =>
-            isset($input["federal_jobs"]) && $input["federal_jobs"] === "1",
+        "job_division" => $job_division,
     ];
+}
+
+function summit_jobdiva_get_selected_division($settings)
+{
+    if (!is_array($settings)) {
+        return "Commercial";
+    }
+
+    if (
+        isset($settings["job_division"]) &&
+        in_array($settings["job_division"], ["Federal", "Commercial"], true)
+    ) {
+        return $settings["job_division"];
+    }
+
+    if (array_key_exists("federal_jobs", $settings)) {
+        return !empty($settings["federal_jobs"]) ? "Federal" : "Commercial";
+    }
+
+    return "Commercial";
 }
 
 function summit_jobdiva_render_client_id_field()
@@ -161,21 +187,31 @@ function summit_jobdiva_render_password_field()
     <?php
 }
 
-function summit_jobdiva_render_federal_jobs_field()
+function summit_jobdiva_render_job_division_field()
 {
     $settings = get_option("summit_jobdiva_settings", []);
-    $federal_jobs = is_array($settings) && !empty($settings["federal_jobs"]);
+    $job_division = summit_jobdiva_get_selected_division($settings);
     ?>
-    <label for="summit_jobdiva_federal_jobs">
-        <input
-            type="checkbox"
-            id="summit_jobdiva_federal_jobs"
-            name="summit_jobdiva_settings[federal_jobs]"
-            value="1"
-            <?php checked($federal_jobs); ?>
-        />
-        <?php esc_html_e("Federal Jobs Only", "summit-jobdiva"); ?>
-    </label>
+    <select
+        id="summit_jobdiva_job_division"
+        name="summit_jobdiva_settings[job_division]"
+    >
+        <option value="Federal" <?php selected($job_division, "Federal"); ?>>
+            <?php esc_html_e("Federal", "summit-jobdiva"); ?>
+        </option>
+        <option value="Commercial" <?php selected(
+            $job_division,
+            "Commercial",
+        ); ?>>
+            <?php esc_html_e("Commercial", "summit-jobdiva"); ?>
+        </option>
+    </select>
+    <p class="description">
+        <?php esc_html_e(
+            "Federal includes jobs with a Federal division name; Commercial includes all other jobs.",
+            "summit-jobdiva",
+        ); ?>
+    </p>
     <?php
 }
 

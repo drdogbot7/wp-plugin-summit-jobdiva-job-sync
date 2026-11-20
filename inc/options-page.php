@@ -12,6 +12,8 @@ function summit_jobdiva_register_settings()
                 "username" => "",
                 "password" => "",
                 "job_division" => "Commercial",
+                "admin_email" => "",
+                "negative_keywords" => "",
             ],
         ],
     );
@@ -54,6 +56,29 @@ function summit_jobdiva_register_settings()
         "summit-jobdiva-settings",
         "summit_jobdiva_connection",
     );
+
+    add_settings_field(
+        "summit_jobdiva_admin_email",
+        __("Admin Notification Email", "summit-jobdiva"),
+        "summit_jobdiva_render_admin_email_field",
+        "summit-jobdiva-settings",
+        "summit_jobdiva_connection",
+    );
+
+    add_settings_section(
+        "summit_jobdiva_job_filters",
+        __("Job Filters", "summit-jobdiva"),
+        "__return_null",
+        "summit-jobdiva-settings",
+    );
+
+    add_settings_field(
+        "summit_jobdiva_negative_keywords",
+        __("Exclude Job Titles Containing", "summit-jobdiva"),
+        "summit_jobdiva_render_negative_keywords_field",
+        "summit-jobdiva-settings",
+        "summit_jobdiva_job_filters",
+    );
 }
 add_action("admin_init", "summit_jobdiva_register_settings");
 
@@ -68,6 +93,35 @@ function summit_jobdiva_register_options_page()
     );
 }
 add_action("admin_menu", "summit_jobdiva_register_options_page");
+
+add_action(
+    "admin_post_summit_jobdiva_manual_sync",
+    "summit_jobdiva_handle_manual_sync",
+);
+
+function summit_jobdiva_handle_manual_sync()
+{
+    if (!current_user_can("manage_options")) {
+        wp_die(
+            esc_html__(
+                "You are not allowed to run a JobDiva sync.",
+                "summit-jobdiva",
+            ),
+        );
+    }
+
+    check_admin_referer("summit_jobdiva_manual_sync");
+    import_jobs_from_jobdiva();
+
+    wp_safe_redirect(
+        add_query_arg(
+            "page",
+            "summit-jobdiva-settings",
+            admin_url("options-general.php"),
+        ),
+    );
+    exit();
+}
 
 function summit_jobdiva_sanitize_settings($input)
 {
@@ -101,6 +155,43 @@ function summit_jobdiva_sanitize_settings($input)
         isset($input["job_division"]) && is_string($input["job_division"])
             ? sanitize_text_field(wp_unslash($input["job_division"]))
             : "";
+    $admin_email_input =
+        isset($input["admin_email"]) && is_string($input["admin_email"])
+            ? trim(wp_unslash($input["admin_email"]))
+            : "";
+    if (
+        isset($input["negative_keywords"]) &&
+        is_string($input["negative_keywords"])
+    ) {
+        $negative_keywords = sanitize_textarea_field(
+            wp_unslash($input["negative_keywords"]),
+        );
+    } elseif (
+        isset($current_settings["negative_keywords"]) &&
+        is_string($current_settings["negative_keywords"])
+    ) {
+        $negative_keywords = $current_settings["negative_keywords"];
+    } else {
+        $negative_keywords = "";
+    }
+    $admin_email = sanitize_email($admin_email_input);
+    if ($admin_email_input !== "" && !is_email($admin_email)) {
+        add_settings_error(
+            "summit_jobdiva_settings",
+            "invalid_admin_email",
+            __(
+                "Please enter a valid admin notification email address.",
+                "summit-jobdiva",
+            ),
+        );
+        $admin_email =
+            isset($current_settings["admin_email"]) &&
+            is_string($current_settings["admin_email"]) &&
+            is_email($current_settings["admin_email"])
+                ? $current_settings["admin_email"]
+                : "";
+    }
+
     if (!in_array($job_division, ["Federal", "Commercial"], true)) {
         $job_division = summit_jobdiva_get_selected_division($current_settings);
     }
@@ -112,6 +203,8 @@ function summit_jobdiva_sanitize_settings($input)
         "password" =>
             $password !== "" ? $password : $current_settings["password"] ?? "",
         "job_division" => $job_division,
+        "admin_email" => $admin_email,
+        "negative_keywords" => $negative_keywords,
     ];
 }
 
@@ -126,10 +219,6 @@ function summit_jobdiva_get_selected_division($settings)
         in_array($settings["job_division"], ["Federal", "Commercial"], true)
     ) {
         return $settings["job_division"];
-    }
-
-    if (array_key_exists("federal_jobs", $settings)) {
-        return !empty($settings["federal_jobs"]) ? "Federal" : "Commercial";
     }
 
     return "Commercial";
@@ -215,6 +304,146 @@ function summit_jobdiva_render_job_division_field()
     <?php
 }
 
+function summit_jobdiva_render_admin_email_field()
+{
+    $settings = get_option("summit_jobdiva_settings", []);
+    $admin_email =
+        is_array($settings) && isset($settings["admin_email"])
+            ? $settings["admin_email"]
+            : "";
+    if (!is_string($admin_email) || !is_email($admin_email)) {
+        $admin_email = get_option("admin_email", "");
+    }
+    ?>
+    <input
+        type="email"
+        id="summit_jobdiva_admin_email"
+        name="summit_jobdiva_settings[admin_email]"
+        value="<?php echo esc_attr($admin_email); ?>"
+        class="regular-text"
+        autocomplete="email"
+    />
+    <p class="description">
+        <?php esc_html_e(
+            "Job import failure notifications are sent here. Leave blank to use the WordPress admin email.",
+            "summit-jobdiva",
+        ); ?>
+    </p>
+    <?php
+}
+
+function summit_jobdiva_render_negative_keywords_field()
+{
+    $settings = get_option("summit_jobdiva_settings", []);
+    $negative_keywords =
+        is_array($settings) && isset($settings["negative_keywords"])
+            ? $settings["negative_keywords"]
+            : "";
+    if (!is_string($negative_keywords)) {
+        $negative_keywords = "";
+    }
+    ?>
+    <textarea
+        id="summit_jobdiva_negative_keywords"
+        name="summit_jobdiva_settings[negative_keywords]"
+        rows="6"
+        class="large-text"
+    ><?php echo esc_textarea($negative_keywords); ?></textarea>
+    <p class="description">
+        <?php esc_html_e(
+            "Enter one keyword or phrase per line. A job is excluded when its title contains any listed term, regardless of capitalization.",
+            "summit-jobdiva",
+        ); ?>
+    </p>
+    <?php
+}
+
+function summit_jobdiva_render_last_sync_status()
+{
+    $sync_status = get_option("summit_jobdiva_last_sync", []);
+    if (
+        !is_array($sync_status) ||
+        !isset($sync_status["status"], $sync_status["timestamp"]) ||
+        !is_numeric($sync_status["timestamp"]) ||
+        !in_array($sync_status["status"], ["success", "failed"], true)
+    ) { ?>
+        <div class="notice notice-info inline">
+            <p><?php esc_html_e(
+                "No JobDiva sync status is available yet.",
+                "summit-jobdiva",
+            ); ?></p>
+        </div>
+        <?php return;}
+
+    $timestamp = (int) $sync_status["timestamp"];
+    $date_format = get_option("date_format") . " " . get_option("time_format");
+    $completed_at = wp_date($date_format, $timestamp);
+    $added =
+        isset($sync_status["added"]) && is_numeric($sync_status["added"])
+            ? max(0, (int) $sync_status["added"])
+            : 0;
+    $trashed =
+        isset($sync_status["trashed"]) && is_numeric($sync_status["trashed"])
+            ? max(0, (int) $sync_status["trashed"])
+            : 0;
+    $excluded =
+        isset($sync_status["excluded"]) && is_numeric($sync_status["excluded"])
+            ? max(0, (int) $sync_status["excluded"])
+            : 0;
+
+    if ($sync_status["status"] === "success") { ?>
+            <p>
+                <strong><?php esc_html_e(
+                    "Last JobDiva sync completed:",
+                    "summit-jobdiva",
+                ); ?></strong>
+                <?php echo esc_html($completed_at); ?>
+            </p>
+            <p>
+                <?php printf(
+                    esc_html__(
+                        "%1\$s jobs added; %2\$s jobs trashed; %3\$s jobs excluded.",
+                        "summit-jobdiva",
+                    ),
+                    esc_html(number_format_i18n($added)),
+                    esc_html(number_format_i18n($trashed)),
+                    esc_html(number_format_i18n($excluded)),
+                ); ?>
+            </p>
+        <?php return;}
+
+    $error =
+        isset($sync_status["error"]) && is_string($sync_status["error"])
+            ? $sync_status["error"]
+            : __("Unknown JobDiva sync error.", "summit-jobdiva");
+    ?>
+    <div class="notice notice-error inline" role="status">
+        <p>
+            <strong><?php esc_html_e(
+                "Last JobDiva sync failed:",
+                "summit-jobdiva",
+            ); ?></strong>
+            <?php echo esc_html($completed_at); ?>
+        </p>
+        <p>
+            <strong><?php esc_html_e("Error:", "summit-jobdiva"); ?></strong>
+            <?php echo esc_html($error); ?>
+        </p>
+        <p>
+            <?php printf(
+                esc_html__(
+                    "Before failure: %1\$s jobs added; %2\$s jobs trashed; %3\$s jobs excluded.",
+                    "summit-jobdiva",
+                ),
+                esc_html(number_format_i18n($added)),
+                esc_html(number_format_i18n($trashed)),
+                esc_html(number_format_i18n($excluded)),
+            ); ?>
+        </p>
+    </div>
+    <?php
+}
+
 function summit_jobdiva_render_options_page()
 {
     if (!current_user_can("manage_options")) {
@@ -222,6 +451,23 @@ function summit_jobdiva_render_options_page()
     } ?>
     <div class="wrap">
         <h1><?php esc_html_e("JobDiva Settings", "summit-jobdiva"); ?></h1>
+        <h2>Sync Status</h2>
+        <?php summit_jobdiva_render_last_sync_status(); ?>
+        <form
+            action="<?php echo esc_url(admin_url("admin-post.php")); ?>"
+            method="post"
+        >
+            <input type="hidden" name="action" value="summit_jobdiva_manual_sync" />
+            <?php
+            wp_nonce_field("summit_jobdiva_manual_sync");
+            submit_button(
+                __("Sync Jobs Now", "summit-jobdiva"),
+                "secondary",
+                "submit",
+                false,
+            );
+            ?>
+        </form>
         <form action="options.php" method="post">
             <?php
             settings_fields("summit_jobdiva_settings_group");

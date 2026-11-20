@@ -1,183 +1,39 @@
 <?php
 /**
- * Import jobs from the existing XML feed into WordPress job posts.
- *
- * The v2 API helpers below currently cache responses for inspection; the
- * scheduled importer still uses this legacy feed.
+ * Index existing JobDiva posts by their durable external ID.
  */
-function import_jobs_from_jobdiva()
+function summit_jobdiva_get_existing_job_posts()
 {
-    global $wpdb;
-    try {
-        // Keep the existing XML feed and field mapping until the v2 importer is ready.
-        $apiUrla =
-            "https://www1.jobdiva.com/employers/connect/listofportaljobs.jsp?a=1fjdnwj5s1czk3c1p3k8e25uyoaj0s096595yhp5d8kysoguwx94p7sxk7uhqlg0&&fulldesc=1";
-        $xmlfile = file_get_contents($apiUrla);
-        // Convert XML into an array to preserve the legacy field-access pattern.
-        $new = simplexml_load_string(
-            $xmlfile,
-            "SimpleXMLElement",
-            LIBXML_NOCDATA,
-        );
-        $con = json_encode($new);
-        $data = json_decode($con, true);
-        $newdata = $data["jobs"]["job"];
+    $post_ids = get_posts([
+        "post_type" => "job",
+        "post_status" => array_values(get_post_stati([], "names")),
+        "numberposts" => -1,
+        "fields" => "ids",
+    ]);
 
-        $errors = [];
-        $settings = get_option("summit_jobdiva_settings", []);
-        $selected_division = summit_jobdiva_get_selected_division($settings);
-        // Only the exact Federal division is Federal; all other values are Commercial.
-        // Existing posts are deleted before replacement jobs are validated or inserted.
-        $deleteJobs = delete_custom_posts("job");
-        if ($deleteJobs) {
-            foreach ($newdata as $key => $jsonToArray) {
-                // Ignore malformed feed rows rather than reading fields from them.
-                if (!is_array($jsonToArray)) {
-                    continue;
-                }
-                $division = $jsonToArray["internal_division"] ?? "";
-                $job_division =
-                    $division === "Federal" ? "Federal" : "Commercial";
-                if (
-                    !empty($jsonToArray) &&
-                    isset($jsonToArray["jobdivaid"]) &&
-                    $jsonToArray["jobdivaid"] != "" &&
-                    $job_division === $selected_division
-                ) {
-                    // Collect missing required values for the error email below.
-                    // The current importer still attempts to insert these posts.
-                    $fieldErrors = [];
-
-                    if (empty($jsonToArray["title"])) {
-                        $fieldErrors[] = "Job Title is empty";
-                    }
-                    if (empty($jsonToArray["jobdivaid"])) {
-                        $fieldErrors[] = "Job ID is empty";
-                    }
-
-                    // Collect all errors
-                    if (!empty($fieldErrors)) {
-                        $errors[] =
-                            "Job ID: " .
-                            $jsonToArray["jobdivaid"] .
-                            ", Job Title: " .
-                            $jsonToArray["title"] .
-                            " has the following issues: " .
-                            implode(", ", $fieldErrors);
-                    }
-
-                    // Store the JobDiva issue date in the site's YYYY-MM-DD format.
-                    $date = $jsonToArray["issuedate"];
-
-                    $createDate = new DateTime($date);
-
-                    $strip = $createDate->format("Y-m-d");
-
-                    // JobDiva scores flexibility from 0 (on-site) to 100 (remote);
-                    // the theme displays those values as On-Site, Hybrid, or Remote.
-                    $remotelocation = $jsonToArray["onsiteflexibility"];
-                    if ($remotelocation == "100") {
-                        $remotelocation = "Remote";
-                    } elseif ($remotelocation == "0") {
-                        $remotelocation = "On-Site";
-                    } else {
-                        $remotelocation = "Hybrid";
-                    }
-
-                    // Store location only for flexibility scores from 0 to 99,
-                    // combining whichever city/state components are available.
-                    if (
-                        $jsonToArray["onsiteflexibility"] >= 0 &&
-                        $jsonToArray["onsiteflexibility"] <= 99
-                    ) {
-                        if (
-                            empty($jsonToArray["city"]) &&
-                            empty($jsonToArray["state"])
-                        ) {
-                            $saveLocation = "";
-                        } elseif (
-                            !empty($jsonToArray["city"]) &&
-                            empty($jsonToArray["state"])
-                        ) {
-                            $saveLocation = ucwords(
-                                strtolower($jsonToArray["city"]),
-                            );
-                        } elseif (
-                            empty($jsonToArray["city"]) &&
-                            !empty($jsonToArray["state"])
-                        ) {
-                            $saveLocation = $jsonToArray["state"];
-                        } else {
-                            $saveLocation =
-                                ucwords(strtolower($jsonToArray["city"])) .
-                                " " .
-                                $jsonToArray["state"];
-                        }
-                    } else {
-                        $saveLocation = "";
-                    }
-
-                    // The current mapping writes the description to the post body
-                    // and these three job-detail metadata fields.
-                    $my_post = [
-                        "post_title" => $jsonToArray["title"],
-                        "post_name" => $jsonToArray["jobdivaid"],
-                        "post_content" => $jsonToArray["jobdescription"],
-                        "post_status" => "publish",
-                        "post_author" => "1",
-                        "post_type" => "job",
-                        "meta_input" => [
-                            "location" => $saveLocation,
-                            "reference_number" => $jsonToArray["jobdiva_no"],
-                            "remote" => $jsonToArray["onsiteflexibility"],
-                            "job_post_date" => $strip,
-                            "job_type" => $remotelocation,
-                        ],
-                    ];
-
-                    $post_id[] = wp_insert_post($my_post);
-                }
-            }
+    $existing_jobs = [];
+    foreach ($post_ids as $post_id) {
+        $job_id = get_post_meta($post_id, "_summit_jobdiva_id", true);
+        if (
+            !(is_string($job_id) || is_int($job_id)) ||
+            !ctype_digit((string) $job_id) ||
+            (string) $job_id === "0"
+        ) {
+            continue;
         }
 
-        // If there are any field errors, send an email
-        if (!empty($errors)) {
-            send_admin_error_email(
-                "The following issues were found during the job import:<br>" .
-                    implode("<br>", $errors),
+        $job_id = (string) $job_id;
+        if (isset($existing_jobs[$job_id])) {
+            return new WP_Error(
+                "jobdiva_duplicate_local_job",
+                "Multiple WordPress job posts match the same JobDiva ID.",
             );
         }
-    } catch (Exception $e) {
-        $errorMsg = $e->getMessage();
-        $mesg = $errorMsg;
-    }
-}
 
-/**
- * Delete posts of the requested type along with their terms and metadata.
- */
-function delete_custom_posts($post_type)
-{
-    global $wpdb;
-    $result = $wpdb->query(
-        $wpdb->prepare(
-            "
-            DELETE posts,pt,pm
-            FROM " .
-                $wpdb->prefix .
-                "posts posts
-            LEFT JOIN " .
-                $wpdb->prefix .
-                "term_relationships pt ON pt.object_id = posts.ID
-            LEFT JOIN " .
-                $wpdb->prefix .
-                "postmeta pm ON pm.post_id = posts.ID
-            WHERE posts.post_type = %s
-            ",
-            $post_type,
-        ),
-    );
-    return $result !== false;
+        $existing_jobs[$job_id] = (int) $post_id;
+    }
+
+    return $existing_jobs;
 }
 
 /**
@@ -267,8 +123,11 @@ function summit_jobdiva_request_token($url, $headers = [])
     $token_data = json_decode(wp_remote_retrieve_body($response), true);
     if (
         !is_array($token_data) ||
-        empty($token_data["token"]) ||
-        empty($token_data["refreshtoken"])
+        !isset($token_data["token"], $token_data["refreshtoken"]) ||
+        !is_string($token_data["token"]) ||
+        !is_string($token_data["refreshtoken"]) ||
+        $token_data["token"] === "" ||
+        $token_data["refreshtoken"] === ""
     ) {
         return new WP_Error(
             "jobdiva_auth_invalid_response",
@@ -276,11 +135,9 @@ function summit_jobdiva_request_token($url, $headers = [])
         );
     }
 
-    // Keep only the token values needed for later requests plus their save time.
     return [
         "token" => $token_data["token"],
         "refreshtoken" => $token_data["refreshtoken"],
-        "refreshed_at" => time(),
         "expires_at" => summit_jobdiva_get_token_expiration(
             $token_data["token"],
         ),
@@ -292,15 +149,19 @@ function summit_jobdiva_request_token($url, $headers = [])
  */
 function summit_jobdiva_get_token_expiration($token)
 {
+    // This claim is only a refresh-timing hint; JobDiva validates the token itself.
     if (!is_string($token)) {
         return null;
     }
 
+    // JWTs have three dot-separated parts: header, payload, and signature.
     $segments = explode(".", $token);
     if (count($segments) !== 3) {
         return null;
     }
 
+    // The payload is Base64URL-encoded (not encrypted); restore its Base64 alphabet
+    // and padding before decoding it.
     $payload = $segments[1];
     $payload .= str_repeat("=", (4 - (strlen($payload) % 4)) % 4);
     $decoded_payload = base64_decode(strtr($payload, "-_", "+/"), true);
@@ -308,6 +169,7 @@ function summit_jobdiva_get_token_expiration($token)
         return null;
     }
 
+    // The JWT exp claim is a NumericDate: seconds since the Unix epoch.
     $claims = json_decode($decoded_payload, true);
     if (
         !is_array($claims) ||
@@ -507,10 +369,7 @@ function summit_jobdiva_api_get($url)
     return $response;
 }
 
-/**
- * Fetch and cache the v2 OpenJobsList JSON response for on-demand inspection.
- */
-function summit_jobdiva_cache_open_jobs_response()
+function summit_jobdiva_fetch_open_jobs_response()
 {
     $response = summit_jobdiva_api_get(
         "https://api.jobdiva.com/apiv2/bi/OpenJobsList",
@@ -520,47 +379,44 @@ function summit_jobdiva_cache_open_jobs_response()
     }
 
     $jobs_response = json_decode(wp_remote_retrieve_body($response), true);
-    if (json_last_error() !== JSON_ERROR_NONE || !is_array($jobs_response)) {
+    if (
+        json_last_error() !== JSON_ERROR_NONE ||
+        !is_array($jobs_response) ||
+        !isset($jobs_response["data"]) ||
+        !is_array($jobs_response["data"])
+    ) {
         return new WP_Error(
             "jobdiva_open_jobs_invalid_json",
-            "JobDiva OpenJobsList returned invalid JSON.",
+            "JobDiva OpenJobsList returned an invalid job list.",
         );
     }
 
-    // Keep the decoded response available for the detail-fetch step and inspection.
-    set_transient(
-        "summit_jobdiva_open_jobs_response",
-        $jobs_response,
-        HOUR_IN_SECONDS,
-    );
-
-    return true;
+    return $jobs_response;
 }
 
 /**
- * Fetch details for jobs in the cached list and cache their JSON response.
+ * Select OpenJobsList records for the configured division, keyed by JobDiva ID.
  */
-function summit_jobdiva_cache_job_details_response()
+function summit_jobdiva_select_open_jobs($jobs_response, $selected_division)
 {
-    $open_jobs = get_transient("summit_jobdiva_open_jobs_response");
     if (
-        !is_array($open_jobs) ||
-        !isset($open_jobs["data"]) ||
-        !is_array($open_jobs["data"])
+        !is_array($jobs_response) ||
+        !isset($jobs_response["data"]) ||
+        !is_array($jobs_response["data"])
     ) {
         return new WP_Error(
             "jobdiva_open_jobs_missing_data",
-            "Fetch the OpenJobsList response before fetching job details.",
+            "JobDiva OpenJobsList did not contain job data.",
         );
     }
 
-    $settings = get_option("summit_jobdiva_settings", []);
-    $selected_division = summit_jobdiva_get_selected_division($settings);
-    $job_ids = [];
-    // Classify listed jobs before requesting details, using the configured division.
-    foreach ($open_jobs["data"] as $job) {
+    $selected_jobs = [];
+    foreach ($jobs_response["data"] as $job) {
         if (!is_array($job)) {
-            continue;
+            return new WP_Error(
+                "jobdiva_open_jobs_invalid_record",
+                "JobDiva OpenJobsList contained an invalid job record.",
+            );
         }
 
         $division = $job["DIVISIONNAME"] ?? ($job["internal_division"] ?? "");
@@ -575,28 +431,31 @@ function summit_jobdiva_cache_job_details_response()
             !ctype_digit((string) $job_id) ||
             (string) $job_id === "0"
         ) {
-            continue;
+            return new WP_Error(
+                "jobdiva_open_jobs_invalid_id",
+                "A selected JobDiva job did not contain a valid job ID.",
+            );
         }
 
-        $job_ids[] = (string) $job_id;
+        $selected_jobs[(string) $job_id] = $job;
     }
-    // The endpoint accepts repeated jobIds parameters; send each unique ID once.
-    $job_ids = array_values(array_unique($job_ids));
 
+    return $selected_jobs;
+}
+
+/**
+ * Fetch full details for the supplied numeric JobDiva IDs.
+ */
+function summit_jobdiva_fetch_job_details_response($job_ids)
+{
     if ($job_ids === []) {
-        // An empty selection is still a valid result for the chosen division.
-        set_transient(
-            "summit_jobdiva_job_details_response",
-            [],
-            HOUR_IN_SECONDS,
-        );
-        return true;
+        return [];
     }
 
     $query = implode(
         "&",
         array_map(
-            static fn($job_id) => "jobIds=" . rawurlencode($job_id),
+            static fn($job_id) => "jobIds=" . rawurlencode((string) $job_id),
             $job_ids,
         ),
     );
@@ -608,18 +467,419 @@ function summit_jobdiva_cache_job_details_response()
     }
 
     $details_response = json_decode(wp_remote_retrieve_body($response), true);
-    if (json_last_error() !== JSON_ERROR_NONE || !is_array($details_response)) {
+    if (
+        json_last_error() !== JSON_ERROR_NONE ||
+        !is_array($details_response) ||
+        !isset($details_response["data"]) ||
+        !is_array($details_response["data"])
+    ) {
         return new WP_Error(
             "jobdiva_job_details_invalid_json",
-            "JobDiva JobsDetail returned invalid JSON.",
+            "JobDiva JobsDetail returned an invalid response.",
         );
     }
 
-    // Keep the raw decoded response available for inspection for one hour.
+    return $details_response;
+}
+
+function summit_jobdiva_get_negative_keywords($settings)
+{
+    if (
+        !is_array($settings) ||
+        !array_key_exists("negative_keywords", $settings)
+    ) {
+        $keywords = "";
+    } elseif (is_string($settings["negative_keywords"])) {
+        $keywords = $settings["negative_keywords"];
+    } else {
+        $keywords = "";
+    }
+
+    $keywords = preg_split('/\r\n|\r|\n/', $keywords);
+
+    return array_values(
+        array_filter(
+            array_map("trim", $keywords),
+            static fn($keyword) => $keyword !== "",
+        ),
+    );
+}
+
+function summit_jobdiva_should_exclude_job_title($title, $negative_keywords)
+{
+    if (!is_string($title)) {
+        return false;
+    }
+
+    foreach ($negative_keywords as $keyword) {
+        if ($keyword !== "" && stripos($title, $keyword) !== false) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Map one v2 JobDetail record to the WordPress post format used by the site.
+ */
+function summit_jobdiva_map_job_to_post($job_id, $list_job, $job)
+{
+    $title = $job["JOBTITLE"] ?? ($list_job["TITLE"] ?? "");
+    $date_value = $job["DATEISSUED"] ?? ($list_job["ISSUEDATE"] ?? "");
+    $flexibility =
+        $job["ONSITE_FLEXIBILITY"] ?? ($list_job["ONSITE_FLEXIBILITY"] ?? null);
+
+    $errors = [];
+    if (!is_string($title) || trim($title) === "") {
+        $errors[] = "Job Title is empty";
+    }
+
+    $issue_date = false;
+    if (is_string($date_value) && trim($date_value) !== "") {
+        try {
+            $issue_date = date_create($date_value);
+        } catch (Throwable $error) {
+            $issue_date = false;
+        }
+    }
+    if ($issue_date === false) {
+        $errors[] = "Issue date is missing or invalid";
+    }
+
+    if (!is_numeric($flexibility)) {
+        $errors[] = "Onsite flexibility is missing or invalid";
+    }
+
+    if ($errors !== []) {
+        return new WP_Error(
+            "jobdiva_job_invalid_fields",
+            implode(", ", $errors),
+        );
+    }
+
+    $flexibility_value = (float) $flexibility;
+    if ($flexibility_value == 100) {
+        $job_type = "Remote";
+    } elseif ($flexibility_value == 0) {
+        $job_type = "On-Site";
+    } else {
+        $job_type = "Hybrid";
+    }
+
+    $city = $job["CITY"] ?? ($list_job["CITY"] ?? "");
+    $state = $job["STATE"] ?? ($list_job["STATE"] ?? "");
+    $city = is_string($city) ? $city : "";
+    $state = is_string($state) ? $state : "";
+    $location = "";
+    if ($flexibility_value >= 0 && $flexibility_value <= 99) {
+        if (!empty($city) && !empty($state)) {
+            $location = ucwords(strtolower($city)) . ", " . $state;
+        } elseif (!empty($city)) {
+            $location = ucwords(strtolower($city));
+        } elseif (!empty($state)) {
+            $location = $state;
+        }
+    }
+
+    $reference_number = $job["JOBDIVANO"] ?? ($list_job["JOBDIVANO"] ?? "");
+    $description = $job["JOBDESCRIPTION"] ?? "";
+
+    return [
+        "post_title" => $title,
+        "post_name" => (string) $job_id,
+        "post_content" => is_string($description) ? $description : "",
+        "post_status" => "publish",
+        "post_author" => "1",
+        "post_type" => "job",
+        "meta_input" => [
+            "_summit_jobdiva_id" => (string) $job_id,
+            "location" => $location,
+            "reference_number" => is_scalar($reference_number)
+                ? (string) $reference_number
+                : "",
+            "remote" => (string) $flexibility,
+            "job_post_date" => $issue_date->format("Y-m-d"),
+            "job_type" => $job_type,
+        ],
+    ];
+}
+
+/**
+ * Save the outcome of the latest JobDiva sync for the settings page.
+ */
+function summit_jobdiva_save_sync_status(
+    $status,
+    $added,
+    $trashed,
+    $excluded,
+    $error = "",
+) {
+    update_option(
+        "summit_jobdiva_last_sync",
+        [
+            "status" => $status,
+            "timestamp" => time(),
+            "added" => (int) $added,
+            "trashed" => (int) $trashed,
+            "excluded" => (int) $excluded,
+            "error" => $error,
+        ],
+        false,
+    );
+}
+
+/**
+ * Log and email a JobDiva import failure.
+ */
+function summit_jobdiva_report_import_error(
+    $error,
+    $email_message = "",
+    $added = 0,
+    $trashed = 0,
+    $excluded = 0,
+    $status_error = "",
+) {
+    error_log("JobDiva import failed: " . $error->get_error_message());
+    summit_jobdiva_save_sync_status(
+        "failed",
+        $added,
+        $trashed,
+        $excluded,
+        $status_error !== "" ? $status_error : $error->get_error_message(),
+    );
+
+    if ($email_message === "") {
+        $email_message = esc_html($error->get_error_message());
+    }
+
+    send_admin_error_email($email_message);
+
+    return $error;
+}
+
+/**
+ * Import selected JobDiva jobs from the v2 list and detail endpoints.
+ */
+function import_jobs_from_jobdiva()
+{
+    $settings = get_option("summit_jobdiva_settings", []);
+    $selected_division = summit_jobdiva_get_selected_division($settings);
+
+    $jobs_response = summit_jobdiva_fetch_open_jobs_response();
+    if (is_wp_error($jobs_response)) {
+        return summit_jobdiva_report_import_error($jobs_response);
+    }
+
+    if ($jobs_response["data"] === []) {
+        $error = new WP_Error(
+            "jobdiva_open_jobs_empty",
+            "JobDiva OpenJobsList returned no open jobs; existing posts were left unchanged.",
+        );
+        return summit_jobdiva_report_import_error($error);
+    }
+
+    $selected_jobs = summit_jobdiva_select_open_jobs(
+        $jobs_response,
+        $selected_division,
+    );
+    if (is_wp_error($selected_jobs)) {
+        return summit_jobdiva_report_import_error($selected_jobs);
+    }
+
+    $details_response = summit_jobdiva_fetch_job_details_response(
+        array_keys($selected_jobs),
+    );
+    if (is_wp_error($details_response)) {
+        return summit_jobdiva_report_import_error($details_response);
+    }
+
     set_transient(
         "summit_jobdiva_job_details_response",
         $details_response,
         HOUR_IN_SECONDS,
+    );
+
+    $details_by_id = [];
+    foreach ($details_response["data"] ?? [] as $job) {
+        if (!is_array($job)) {
+            $error = new WP_Error(
+                "jobdiva_job_details_invalid_record",
+                "JobDiva JobsDetail contained an invalid job record.",
+            );
+            return summit_jobdiva_report_import_error($error);
+        }
+
+        $job_id = $job["ID"] ?? "";
+        if (
+            !(is_string($job_id) || is_int($job_id)) ||
+            !ctype_digit((string) $job_id)
+        ) {
+            $error = new WP_Error(
+                "jobdiva_job_details_invalid_id",
+                "JobDiva JobsDetail contained a record without a valid job ID.",
+            );
+            return summit_jobdiva_report_import_error($error);
+        }
+
+        $job_id = (string) $job_id;
+        if (isset($selected_jobs[$job_id])) {
+            $details_by_id[$job_id] = $job;
+        }
+    }
+
+    $missing_details = array_diff(
+        array_keys($selected_jobs),
+        array_keys($details_by_id),
+    );
+    if ($missing_details !== []) {
+        $error = new WP_Error(
+            "jobdiva_job_details_incomplete",
+            "JobDiva JobsDetail did not return details for every selected job.",
+        );
+        return summit_jobdiva_report_import_error($error);
+    }
+
+    $posts = [];
+    $field_errors = [];
+    $negative_keywords = summit_jobdiva_get_negative_keywords($settings);
+    $excluded_count = 0;
+    foreach ($selected_jobs as $job_id => $list_job) {
+        $title =
+            $details_by_id[$job_id]["JOBTITLE"] ?? ($list_job["TITLE"] ?? "");
+        if (
+            summit_jobdiva_should_exclude_job_title($title, $negative_keywords)
+        ) {
+            $excluded_count++;
+            continue;
+        }
+
+        $post = summit_jobdiva_map_job_to_post(
+            $job_id,
+            $list_job,
+            $details_by_id[$job_id],
+        );
+        if (is_wp_error($post)) {
+            $field_errors[] =
+                "Job ID: " .
+                $job_id .
+                " has the following issues: " .
+                $post->get_error_message();
+            continue;
+        }
+
+        $posts[(string) $job_id] = $post;
+    }
+
+    if ($field_errors !== []) {
+        $error = new WP_Error(
+            "jobdiva_job_details_invalid_fields",
+            "JobDiva job details failed validation; existing posts were not changed.",
+        );
+        return summit_jobdiva_report_import_error(
+            $error,
+            "The following issues prevented the JobDiva import:<br>" .
+                implode("<br>", array_map("esc_html", $field_errors)),
+            0,
+            0,
+            $excluded_count,
+            implode("; ", $field_errors),
+        );
+    }
+
+    $existing_jobs = summit_jobdiva_get_existing_job_posts();
+    if (is_wp_error($existing_jobs)) {
+        return summit_jobdiva_report_import_error(
+            $existing_jobs,
+            "",
+            0,
+            0,
+            $excluded_count,
+        );
+    }
+
+    $upsert_errors = [];
+    $added_count = 0;
+    foreach ($posts as $job_id => $post) {
+        $is_new_job = !isset($existing_jobs[$job_id]);
+        if (!$is_new_job) {
+            // Preserve the existing slug so WordPress keeps the same permalink.
+            $post["ID"] = $existing_jobs[$job_id];
+            unset($post["post_name"]);
+            $post_id = wp_update_post($post, true);
+        } else {
+            $post_id = wp_insert_post($post, true);
+        }
+
+        if (is_wp_error($post_id) || !$post_id) {
+            $upsert_errors[] =
+                "Job ID: " .
+                $job_id .
+                " could not be saved: " .
+                (is_wp_error($post_id)
+                    ? $post_id->get_error_message()
+                    : "WordPress did not return a post ID.");
+            continue;
+        }
+
+        if ($is_new_job) {
+            $added_count++;
+        }
+    }
+
+    if ($upsert_errors !== []) {
+        $error = new WP_Error(
+            "jobdiva_import_upsert_failed",
+            "One or more JobDiva jobs could not be saved; stale jobs were left unchanged.",
+        );
+        return summit_jobdiva_report_import_error(
+            $error,
+            "The following errors occurred while saving JobDiva jobs:<br>" .
+                implode("<br>", array_map("esc_html", $upsert_errors)),
+            $added_count,
+            0,
+            $excluded_count,
+            implode("; ", $upsert_errors),
+        );
+    }
+
+    $trash_errors = [];
+    $trashed_count = 0;
+    foreach ($existing_jobs as $job_id => $post_id) {
+        if (isset($posts[$job_id]) || get_post_status($post_id) === "trash") {
+            continue;
+        }
+
+        $trashed_post = wp_trash_post($post_id);
+        if (is_wp_error($trashed_post) || !$trashed_post) {
+            $trash_errors[] =
+                "Job ID: " . $job_id . " could not be moved to the trash.";
+        } else {
+            $trashed_count++;
+        }
+    }
+
+    if ($trash_errors !== []) {
+        $error = new WP_Error(
+            "jobdiva_import_trash_failed",
+            "One or more stale JobDiva jobs could not be moved to the trash.",
+        );
+        return summit_jobdiva_report_import_error(
+            $error,
+            "The following errors occurred while moving stale JobDiva jobs to the trash:<br>" .
+                implode("<br>", array_map("esc_html", $trash_errors)),
+            $added_count,
+            $trashed_count,
+            $excluded_count,
+            implode("; ", $trash_errors),
+        );
+    }
+
+    summit_jobdiva_save_sync_status(
+        "success",
+        $added_count,
+        $trashed_count,
+        $excluded_count,
     );
 
     return true;
@@ -628,12 +888,11 @@ function summit_jobdiva_cache_job_details_response()
 //////// Code for Cron Job /////////////////////////////////////////////////////////////////////
 
 /**
- * Remove both scheduled events when the plugin is deactivated.
+ * Remove the importer schedule when the plugin is deactivated.
  */
 function shc_import_jobs_from_jobdiva_deactivate()
 {
     wp_clear_scheduled_hook("shc_import_jobs_from_jobdiva_cron");
-    wp_clear_scheduled_hook("shc_jobdiva_token_refresh_cron");
 }
 
 // Register callbacks globally so WordPress can dispatch the scheduled events.
@@ -650,15 +909,10 @@ add_action("init", function () {
     // Preserve the existing importer schedule when no import event exists.
     if (!wp_next_scheduled("shc_import_jobs_from_jobdiva_cron")) {
         wp_schedule_event(
-            date("d-m-Y h:i:s A"),
+            time() + MINUTE_IN_SECONDS,
             "daily",
             "shc_import_jobs_from_jobdiva_cron",
         );
-    }
-
-    // Remove the old fixed weekly refresh; v2 requests now refresh as needed.
-    if (wp_next_scheduled("shc_jobdiva_token_refresh_cron")) {
-        wp_clear_scheduled_hook("shc_jobdiva_token_refresh_cron");
     }
 });
 
@@ -671,23 +925,36 @@ function shc_import_jobs_from_jobdiva_run_cron()
 }
 
 /**
- * Email the site administrator about job-import field validation issues.
+ * Email the configured administrator about a JobDiva import failure.
  */
 function send_admin_error_email($message)
 {
-    $admin_email = "jeremy@coneflower.org";
+    $settings = get_option("summit_jobdiva_settings", []);
+    $admin_email =
+        is_array($settings) && isset($settings["admin_email"])
+            ? $settings["admin_email"]
+            : "";
+    if (!is_string($admin_email) || !is_email($admin_email)) {
+        $admin_email = get_option("admin_email", "");
+    }
+    if (!is_string($admin_email) || !is_email($admin_email)) {
+        error_log(
+            "JobDiva import notification was not sent: no valid notification email is configured.",
+        );
+        return false;
+    }
+
     $subject = "Job Import Error Notification";
     $body = "There were issues during the job import process:<br>" . $message;
-    $headers = [];
-    add_filter("wp_mail_content_type", function ($content_type) {
-        return "text/html";
-    });
-    $headers[] =
-        "From: SummitHumanCapital <no_reply@summithumancapital.com>" . "\r\n";
+    $headers = [
+        "Content-Type: text/html; charset=UTF-8",
+        "From: SummitHumanCapital <no_reply@summithumancapital.com>",
+    ];
 
-    if (wp_mail($admin_email, $subject, $body, $headers)) {
-        echo "Mail Sent";
-    } else {
-        echo "Main Not Sent";
+    $sent = wp_mail($admin_email, $subject, $body, $headers);
+    if (!$sent) {
+        error_log("JobDiva import notification email could not be sent.");
     }
+
+    return $sent;
 }

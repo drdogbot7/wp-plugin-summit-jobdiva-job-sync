@@ -351,7 +351,7 @@ function summit_jobdiva_render_negative_keywords_field()
     ><?php echo esc_textarea($negative_keywords); ?></textarea>
     <p class="description">
         <?php esc_html_e(
-            "Enter one keyword or phrase per line. A job is excluded when its title contains any listed term, regardless of capitalization.",
+            "Enter one keyword or phrase per line. A job is excluded when its title contains any listed term. Not case sensitive.",
             "summit-jobdiva",
         ); ?>
     </p>

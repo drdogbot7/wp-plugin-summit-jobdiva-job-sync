@@ -138,48 +138,7 @@ function summit_jobdiva_request_token($url, $headers = [])
     return [
         "token" => $token_data["token"],
         "refreshtoken" => $token_data["refreshtoken"],
-        "expires_at" => summit_jobdiva_get_token_expiration(
-            $token_data["token"],
-        ),
     ];
-}
-
-/**
- * Read the JWT expiration claim for refresh timing; null means it is unavailable.
- */
-function summit_jobdiva_get_token_expiration($token)
-{
-    // This claim is only a refresh-timing hint; JobDiva validates the token itself.
-    if (!is_string($token)) {
-        return null;
-    }
-
-    // JWTs have three dot-separated parts: header, payload, and signature.
-    $segments = explode(".", $token);
-    if (count($segments) !== 3) {
-        return null;
-    }
-
-    // The payload is Base64URL-encoded (not encrypted); restore its Base64 alphabet
-    // and padding before decoding it.
-    $payload = $segments[1];
-    $payload .= str_repeat("=", (4 - (strlen($payload) % 4)) % 4);
-    $decoded_payload = base64_decode(strtr($payload, "-_", "+/"), true);
-    if (!is_string($decoded_payload)) {
-        return null;
-    }
-
-    // The JWT exp claim is a NumericDate: seconds since the Unix epoch.
-    $claims = json_decode($decoded_payload, true);
-    if (
-        !is_array($claims) ||
-        !isset($claims["exp"]) ||
-        !is_numeric($claims["exp"])
-    ) {
-        return null;
-    }
-
-    return (int) $claims["exp"];
 }
 
 /**
@@ -278,7 +237,7 @@ function summit_jobdiva_refresh_auth_token()
 }
 
 /**
- * Return a usable access token, refreshing it near expiry or when forced.
+ * Return the saved access token, authenticating if none is available.
  */
 function summit_jobdiva_get_access_token($force_refresh = false)
 {
@@ -291,32 +250,13 @@ function summit_jobdiva_get_access_token($force_refresh = false)
         $token = "";
     }
 
-    $expires_at =
-        is_array($saved_auth) &&
-        isset($saved_auth["expires_at"]) &&
-        is_numeric($saved_auth["expires_at"])
-            ? (int) $saved_auth["expires_at"]
-            : summit_jobdiva_get_token_expiration($token);
-
-    $refresh_is_due =
-        $token === "" ||
-        ($expires_at !== null && $expires_at <= time() + 5 * MINUTE_IN_SECONDS);
-    if (!$force_refresh && !$refresh_is_due) {
+    if (!$force_refresh && $token !== "") {
         return $token;
     }
 
     $token_data = summit_jobdiva_refresh_auth_token();
     if (!is_wp_error($token_data)) {
         return $token_data["token"];
-    }
-
-    // A still-valid token can serve this request if a proactive refresh fails.
-    if (
-        !$force_refresh &&
-        $token !== "" &&
-        ($expires_at === null || $expires_at > time())
-    ) {
-        return $token;
     }
 
     return $token_data;

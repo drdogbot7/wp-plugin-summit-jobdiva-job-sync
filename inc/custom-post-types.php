@@ -20,11 +20,19 @@ function create_jobs_cpt()
         ],
         "public" => true,
         "hierarchical" => true,
-        "has_archive" => true,
-        "rewrite" => ["slug" => "open-positions/job"],
+        "has_archive" => "open-positions",
+        "rewrite" => ["slug" => "open-positions/job", "with_front" => true],
         "query_var" => true,
         "supports" => ["title", "editor", "excerpt", "thumbnail"],
     ]);
 }
 
 add_action("init", "create_jobs_cpt");
+
+register_activation_hook(__FILE__, "my_rewrite_flush");
+
+function my_rewrite_flush()
+{
+    create_jobs_cpt();
+    flush_rewrite_rules();
+}

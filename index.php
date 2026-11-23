@@ -5,7 +5,7 @@
  * Version: 0.1.0
  * Author: Jeremy Mullis, Coneflower Consulting
  * Author URI: https://www.coneflower.org
- * GitHub Plugin URI:
+ * GitHub Plugin URI: https://github.com/drdogbot7/wp-plugin-summit-jobdiva-job-sync
  * License: GPL-3.0-only
  * License URI: https://www.gnu.org/licenses/gpl-3.0.html
  */

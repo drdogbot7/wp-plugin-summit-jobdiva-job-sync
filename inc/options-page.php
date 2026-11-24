@@ -382,6 +382,10 @@ function summit_jobdiva_render_last_sync_status()
         isset($sync_status["added"]) && is_numeric($sync_status["added"])
             ? max(0, (int) $sync_status["added"])
             : 0;
+    $updated =
+        isset($sync_status["updated"]) && is_numeric($sync_status["updated"])
+            ? max(0, (int) $sync_status["updated"])
+            : 0;
     $trashed =
         isset($sync_status["trashed"]) && is_numeric($sync_status["trashed"])
             ? max(0, (int) $sync_status["trashed"])
@@ -402,10 +406,11 @@ function summit_jobdiva_render_last_sync_status()
             <p>
                 <?php printf(
                     esc_html__(
-                        "%1\$s jobs added; %2\$s jobs trashed; %3\$s jobs excluded.",
+                        "%1\$s jobs added; %2\$s jobs updated; %3\$s jobs trashed; %4\$s jobs excluded.",
                         "summit-jobdiva",
                     ),
                     esc_html(number_format_i18n($added)),
+                    esc_html(number_format_i18n($updated)),
                     esc_html(number_format_i18n($trashed)),
                     esc_html(number_format_i18n($excluded)),
                 ); ?>
@@ -432,10 +437,11 @@ function summit_jobdiva_render_last_sync_status()
         <p>
             <?php printf(
                 esc_html__(
-                    "Before failure: %1\$s jobs added; %2\$s jobs trashed; %3\$s jobs excluded.",
+                    "Before failure: %1\$s jobs added; %2\$s jobs updated; %3\$s jobs trashed; %4\$s jobs excluded.",
                     "summit-jobdiva",
                 ),
                 esc_html(number_format_i18n($added)),
+                esc_html(number_format_i18n($updated)),
                 esc_html(number_format_i18n($trashed)),
                 esc_html(number_format_i18n($excluded)),
             ); ?>

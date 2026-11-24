@@ -13,7 +13,7 @@ function summit_jobdiva_get_existing_job_posts()
 
     $existing_jobs = [];
     foreach ($post_ids as $post_id) {
-        $job_id = get_post_meta($post_id, "_summit_jobdiva_id", true);
+        $job_id = get_post_meta($post_id, "jobdiva_id", true);
         if (
             !(is_string($job_id) || is_int($job_id)) ||
             !ctype_digit((string) $job_id) ||
@@ -517,7 +517,7 @@ function summit_jobdiva_map_job_to_post($job_id, $list_job, $job)
         "post_author" => "1",
         "post_type" => "job",
         "meta_input" => [
-            "_summit_jobdiva_id" => (string) $job_id,
+            "jobdiva_id" => (string) $job_id,
             "location" => $location,
             "reference_number" => is_scalar($reference_number)
                 ? (string) $reference_number
@@ -537,6 +537,7 @@ function summit_jobdiva_save_sync_status(
     $trashed,
     $excluded,
     $error = "",
+    $updated = 0,
 ) {
     update_option(
         "summit_jobdiva_last_sync",
@@ -544,6 +545,7 @@ function summit_jobdiva_save_sync_status(
             "status" => $status,
             "timestamp" => time(),
             "added" => (int) $added,
+            "updated" => (int) $updated,
             "trashed" => (int) $trashed,
             "excluded" => (int) $excluded,
             "error" => $error,
@@ -562,6 +564,7 @@ function summit_jobdiva_report_import_error(
     $trashed = 0,
     $excluded = 0,
     $status_error = "",
+    $updated = 0,
 ) {
     error_log("JobDiva import failed: " . $error->get_error_message());
     summit_jobdiva_save_sync_status(
@@ -570,6 +573,7 @@ function summit_jobdiva_report_import_error(
         $trashed,
         $excluded,
         $status_error !== "" ? $status_error : $error->get_error_message(),
+        $updated,
     );
 
     if ($email_message === "") {
@@ -723,6 +727,7 @@ function import_jobs_from_jobdiva()
 
     $upsert_errors = [];
     $added_count = 0;
+    $updated_count = 0;
     foreach ($posts as $job_id => $post) {
         $is_new_job = !isset($existing_jobs[$job_id]);
         if (!$is_new_job) {
@@ -747,6 +752,8 @@ function import_jobs_from_jobdiva()
 
         if ($is_new_job) {
             $added_count++;
+        } else {
+            $updated_count++;
         }
     }
 
@@ -763,6 +770,7 @@ function import_jobs_from_jobdiva()
             0,
             $excluded_count,
             implode("; ", $upsert_errors),
+            $updated_count,
         );
     }
 
@@ -795,6 +803,7 @@ function import_jobs_from_jobdiva()
             $trashed_count,
             $excluded_count,
             implode("; ", $trash_errors),
+            $updated_count,
         );
     }
 
@@ -803,7 +812,16 @@ function import_jobs_from_jobdiva()
         $added_count,
         $trashed_count,
         $excluded_count,
+        "",
+        $updated_count,
     );
+
+    do_action("summit_jobdiva_sync_completed", [
+        "added" => $added_count,
+        "updated" => $updated_count,
+        "trashed" => $trashed_count,
+        "excluded" => $excluded_count,
+    ]);
 
     return true;
 }

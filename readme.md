@@ -15,7 +15,15 @@ This plugin syncs open jobs from JobDiva to Wordpress using JobDiva's API. Creat
 
 Use **Sync Jobs Now** on the JobDiva settings page to run an import immediately. The plugin also schedules a daily import using WordPress Cron.
 
-The settings page displays the last sync time and its outcome. Successful syncs show the number of jobs added, trashed, and excluded. Failed syncs show the error and any counts recorded before the failure.
+The settings page displays the last sync time and its outcome. Successful syncs show the number of jobs added, updated, trashed, and excluded. Failed syncs show the error and any counts recorded before the failure.
+
+After a successful sync, the plugin fires the `summit_jobdiva_sync_completed` action with an associative array containing `added`, `updated`, `trashed`, and `excluded` counts. For example:
+
+```php
+add_action("summit_jobdiva_sync_completed", function ($summary) {
+    // Run follow-up actions using the sync counts.
+});
+```
 
 ## Import behavior
 

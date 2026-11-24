@@ -467,8 +467,7 @@ function summit_jobdiva_map_job_to_post($job_id, $list_job, $job)
 {
     $title = $job["JOBTITLE"] ?? ($list_job["TITLE"] ?? "");
     $date_value = $job["DATEISSUED"] ?? ($list_job["ISSUEDATE"] ?? "");
-    $flexibility =
-        $job["ONSITE_FLEXIBILITY"] ?? ($list_job["ONSITE_FLEXIBILITY"] ?? null);
+    $job_type = $job["ONSITE_REMOTE"] ?? ($list_job["ONSITE_REMOTE"] ?? "");
 
     $errors = [];
     if (!is_string($title) || trim($title) === "") {
@@ -487,10 +486,6 @@ function summit_jobdiva_map_job_to_post($job_id, $list_job, $job)
         $errors[] = "Issue date is missing or invalid";
     }
 
-    if (!is_numeric($flexibility)) {
-        $errors[] = "Onsite flexibility is missing or invalid";
-    }
-
     if ($errors !== []) {
         return new WP_Error(
             "jobdiva_job_invalid_fields",
@@ -498,28 +493,17 @@ function summit_jobdiva_map_job_to_post($job_id, $list_job, $job)
         );
     }
 
-    $flexibility_value = (float) $flexibility;
-    if ($flexibility_value == 100) {
-        $job_type = "Remote";
-    } elseif ($flexibility_value == 0) {
-        $job_type = "On-Site";
-    } else {
-        $job_type = "Hybrid";
-    }
-
     $city = $job["CITY"] ?? ($list_job["CITY"] ?? "");
     $state = $job["STATE"] ?? ($list_job["STATE"] ?? "");
     $city = is_string($city) ? $city : "";
     $state = is_string($state) ? $state : "";
     $location = "";
-    if ($flexibility_value >= 0 && $flexibility_value <= 99) {
-        if (!empty($city) && !empty($state)) {
-            $location = ucwords(strtolower($city)) . ", " . $state;
-        } elseif (!empty($city)) {
-            $location = ucwords(strtolower($city));
-        } elseif (!empty($state)) {
-            $location = $state;
-        }
+    if (!empty($city) && !empty($state)) {
+        $location = ucwords(strtolower($city)) . ", " . $state;
+    } elseif (!empty($city)) {
+        $location = ucwords(strtolower($city));
+    } elseif (!empty($state)) {
+        $location = $state;
     }
 
     $reference_number = $job["JOBDIVANO"] ?? ($list_job["JOBDIVANO"] ?? "");
@@ -538,7 +522,6 @@ function summit_jobdiva_map_job_to_post($job_id, $list_job, $job)
             "reference_number" => is_scalar($reference_number)
                 ? (string) $reference_number
                 : "",
-            "remote" => (string) $flexibility,
             "job_post_date" => $issue_date->format("Y-m-d"),
             "job_type" => $job_type,
         ],

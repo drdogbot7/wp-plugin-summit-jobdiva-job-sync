@@ -21,17 +21,21 @@ function create_jobs_cpt()
         "public" => true,
         "hierarchical" => true,
         "has_archive" => "open-positions",
-        "rewrite" => ["slug" => "open-positions/job", "with_front" => true],
+        "rewrite" => ["slug" => "open-positions/job", "with_front" => false],
         "query_var" => true,
         "supports" => ["title", "editor", "excerpt", "thumbnail"],
+        "show_in_rest" => true,
     ]);
 }
 
 add_action("init", "create_jobs_cpt");
 
-register_activation_hook(__FILE__, "my_rewrite_flush");
+register_activation_hook(
+    dirname(__DIR__) . "/index.php",
+    "summit_jobdiva_flush_rewrite_rules",
+);
 
-function my_rewrite_flush()
+function summit_jobdiva_flush_rewrite_rules()
 {
     create_jobs_cpt();
     flush_rewrite_rules();
